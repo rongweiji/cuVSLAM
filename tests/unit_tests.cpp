@@ -3,6 +3,7 @@
 #include "cuvslam/dataset_loader.hpp"
 #include "cuvslam/depth_processing.hpp"
 #include "cuvslam/evaluation.hpp"
+#include "cuvslam/image_processing.hpp"
 #include "cuvslam/types.hpp"
 
 #include <opencv2/core.hpp>
@@ -44,9 +45,74 @@ bool testDatasetMetadataParsing() {
   TEST_EXPECT_TRUE(loader.loadFrame(0, frame, &error));
   TEST_EXPECT_TRUE(!frame.rgb.empty());
   TEST_EXPECT_TRUE(!frame.depth_u16.empty());
-  TEST_EXPECT_TRUE(frame.gray.type() == CV_8UC1);
+  TEST_EXPECT_TRUE(frame.gray.empty());
   TEST_EXPECT_TRUE(frame.depth_u16.type() == CV_16UC1);
 
+  return true;
+}
+
+bool testDatasetFrameGrayOnlyLoad() {
+  cuvslam::DatasetLoader loader(CUVSLAM_TEST_DATASET_ROOT);
+  std::string error;
+  TEST_EXPECT_TRUE(loader.loadMetadata(&error));
+
+  cuvslam::FrameData frame;
+  TEST_EXPECT_TRUE(loader.loadFrame(0, frame, false, &error));
+  TEST_EXPECT_TRUE(frame.rgb.empty());
+  TEST_EXPECT_TRUE(frame.gray.type() == CV_8UC1);
+  TEST_EXPECT_TRUE(frame.depth_u16.type() == CV_16UC1);
+  return true;
+}
+
+bool testImageProcessorCpuPath() {
+  cuvslam::ImageProcessor image_processor(false);
+
+  cv::Mat bgr(1, 4, CV_8UC3);
+  bgr.at<cv::Vec3b>(0, 0) = cv::Vec3b(0, 0, 255);
+  bgr.at<cv::Vec3b>(0, 1) = cv::Vec3b(0, 255, 0);
+  bgr.at<cv::Vec3b>(0, 2) = cv::Vec3b(255, 0, 0);
+  bgr.at<cv::Vec3b>(0, 3) = cv::Vec3b(255, 255, 255);
+
+  cv::Mat gray;
+  TEST_EXPECT_TRUE(image_processor.convertBgrToGray(bgr, gray));
+  TEST_EXPECT_TRUE(gray.type() == CV_8UC1);
+  TEST_EXPECT_TRUE(gray.rows == 1 && gray.cols == 4);
+  TEST_EXPECT_TRUE(gray.at<uint8_t>(0, 0) == static_cast<uint8_t>(76));
+  TEST_EXPECT_TRUE(gray.at<uint8_t>(0, 1) == static_cast<uint8_t>(150));
+  TEST_EXPECT_TRUE(gray.at<uint8_t>(0, 2) == static_cast<uint8_t>(29));
+  TEST_EXPECT_TRUE(gray.at<uint8_t>(0, 3) == static_cast<uint8_t>(255));
+
+  return true;
+}
+
+bool testImageProcessorCudaParity() {
+#ifdef CUVSLAM_WITH_CUDA
+  cuvslam::ImageProcessor cpu_processor(false);
+  cuvslam::ImageProcessor gpu_processor(true);
+
+  cv::Mat bgr(64, 96, CV_8UC3);
+  for (int r = 0; r < bgr.rows; ++r) {
+    for (int c = 0; c < bgr.cols; ++c) {
+      bgr.at<cv::Vec3b>(r, c) = cv::Vec3b(static_cast<uint8_t>((r + c) % 256),
+                                          static_cast<uint8_t>((r * 3 + c * 5) % 256),
+                                          static_cast<uint8_t>((r * 7 + c * 11) % 256));
+    }
+  }
+
+  cv::Mat gray_cpu;
+  cv::Mat gray_gpu;
+  TEST_EXPECT_TRUE(cpu_processor.convertBgrToGray(bgr, gray_cpu));
+  TEST_EXPECT_TRUE(gpu_processor.convertBgrToGray(bgr, gray_gpu));
+
+  TEST_EXPECT_TRUE(gray_cpu.size() == gray_gpu.size());
+  TEST_EXPECT_TRUE(gray_cpu.type() == gray_gpu.type());
+
+  cv::Mat diff;
+  cv::absdiff(gray_cpu, gray_gpu, diff);
+  double max_diff = 0.0;
+  cv::minMaxLoc(diff, nullptr, &max_diff);
+  TEST_EXPECT_TRUE(max_diff <= 1.0);
+#endif
   return true;
 }
 
@@ -155,6 +221,9 @@ int main() {
   const std::vector<std::pair<std::string, std::function<bool()>>> tests = {
       {"Pose compose/inverse", testPoseComposeAndInverse},
       {"Dataset metadata parsing", testDatasetMetadataParsing},
+      {"Dataset gray-only load", testDatasetFrameGrayOnlyLoad},
+      {"Image processor CPU path", testImageProcessorCpuPath},
+      {"Image processor CUDA parity", testImageProcessorCudaParity},
       {"Depth processor CPU path", testDepthProcessorCpuPath},
       {"TUM reader and evaluation", testTumReaderAndEvaluation},
       {"TUM dataset parsing (synthetic)", testTumDatasetParsingSynthetic},

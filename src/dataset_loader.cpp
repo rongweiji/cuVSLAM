@@ -1,7 +1,6 @@
 #include "cuvslam/dataset_loader.hpp"
 
 #include <opencv2/imgcodecs.hpp>
-#include <opencv2/imgproc.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -392,7 +391,10 @@ bool DatasetLoader::parseTimestamps(const std::string& path, std::string* error)
   return true;
 }
 
-bool DatasetLoader::loadFrame(size_t index, FrameData& frame, std::string* error) const {
+bool DatasetLoader::loadFrame(size_t index,
+                              FrameData& frame,
+                              bool load_rgb_color,
+                              std::string* error) const {
   if (index >= frames_.size()) {
     if (error) {
       *error = "Frame index out of range.";
@@ -403,12 +405,23 @@ bool DatasetLoader::loadFrame(size_t index, FrameData& frame, std::string* error
   frame = {};
   frame.meta = frames_[index];
 
-  frame.rgb = cv::imread(frame.meta.rgb_path, cv::IMREAD_COLOR);
+  if (load_rgb_color) {
+    frame.rgb = cv::imread(frame.meta.rgb_path, cv::IMREAD_COLOR);
+  } else {
+    frame.gray = cv::imread(frame.meta.rgb_path, cv::IMREAD_GRAYSCALE);
+  }
   frame.depth_u16 = cv::imread(frame.meta.depth_path, cv::IMREAD_UNCHANGED);
 
-  if (frame.rgb.empty()) {
+  if (load_rgb_color && frame.rgb.empty()) {
     if (error) {
       *error = "Failed to load RGB image: " + frame.meta.rgb_path;
+    }
+    return false;
+  }
+
+  if (!load_rgb_color && frame.gray.empty()) {
+    if (error) {
+      *error = "Failed to load grayscale image: " + frame.meta.rgb_path;
     }
     return false;
   }
@@ -427,9 +440,21 @@ bool DatasetLoader::loadFrame(size_t index, FrameData& frame, std::string* error
     return false;
   }
 
-  cv::cvtColor(frame.rgb, frame.gray, cv::COLOR_BGR2GRAY);
+  if (load_rgb_color && frame.rgb.type() != CV_8UC3) {
+    if (error) {
+      *error = "RGB image is not 8-bit 3 channel: " + frame.meta.rgb_path;
+    }
+    return false;
+  }
+
+  if (!load_rgb_color && frame.gray.type() != CV_8UC1) {
+    if (error) {
+      *error = "Gray image is not 8-bit single channel: " + frame.meta.rgb_path;
+    }
+    return false;
+  }
+
   return true;
 }
 
 }  // namespace cuvslam
-

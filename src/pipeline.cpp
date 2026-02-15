@@ -2,16 +2,20 @@
 
 #include "cuvslam/dataset_loader.hpp"
 #include "cuvslam/depth_processing.hpp"
+#include "cuvslam/image_processing.hpp"
 #include "cuvslam/pose_estimator.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <unordered_map>
 
 #ifdef CUVSLAM_WITH_RERUN
 #include <rerun.hpp>
@@ -267,6 +271,7 @@ PipelineResult runPipeline(const PipelineOptions& options) {
   pose_params.max_depth_m = options.max_depth_m;
 
   DepthPoseEstimator estimator(pose_params);
+  ImageProcessor image_processor(options.use_cuda);
   DepthProcessor depth_processor(options.use_cuda);
   depth_processor.setDepthScale(depth_scale_m_per_unit);
   depth_processor.setDepthLimits(options.min_depth_m, options.max_depth_m);
@@ -286,21 +291,81 @@ PipelineResult runPipeline(const PipelineOptions& options) {
   std::string rerun_warning;
 
   const auto run_start = std::chrono::steady_clock::now();
+#ifdef CUVSLAM_WITH_RERUN
+  const bool need_rgb_color = options.enable_rerun && options.rerun_log_images;
+#else
+  const bool need_rgb_color = false;
+#endif
+
+  struct LoadedFrame {
+    FrameData frame;
+    std::string error;
+    bool ok = false;
+    double load_ms = 0.0;
+  };
+
+  auto load_frame = [&loader, need_rgb_color](size_t index) {
+    LoadedFrame loaded;
+    const auto load_start = std::chrono::steady_clock::now();
+    loaded.ok = loader.loadFrame(index, loaded.frame, need_rgb_color, &loaded.error);
+    const auto load_end = std::chrono::steady_clock::now();
+    loaded.load_ms = elapsedMs(load_start, load_end);
+    return loaded;
+  };
+
+  const unsigned hw_threads = std::thread::hardware_concurrency();
+  const size_t prefetch_window = std::max<size_t>(
+      2,
+      std::min<size_t>(8, hw_threads > 0 ? static_cast<size_t>(hw_threads / 2) : 2));
+
+  std::unordered_map<size_t, std::future<LoadedFrame>> prefetch_futures;
+  prefetch_futures.reserve(prefetch_window + 1);
+
+  auto schedule_prefetch = [&](size_t index) {
+    if (index >= frame_limit) {
+      return;
+    }
+    if (prefetch_futures.find(index) != prefetch_futures.end()) {
+      return;
+    }
+    prefetch_futures.emplace(index, std::async(std::launch::async, load_frame, index));
+  };
+
+  const size_t initial_prefetch = std::min(frame_limit, prefetch_window);
+  for (size_t i = 0; i < initial_prefetch; ++i) {
+    schedule_prefetch(i);
+  }
 
   for (size_t i = 0; i < frame_limit; ++i) {
     const auto frame_start = std::chrono::steady_clock::now();
     StageTimings timings;
 
-    FrameData frame;
-    const auto load_start = std::chrono::steady_clock::now();
-    if (!loader.loadFrame(i, frame, &error)) {
-      result.message = "Frame load failed: " + error;
+    schedule_prefetch(i);
+    auto future_it = prefetch_futures.find(i);
+    if (future_it == prefetch_futures.end()) {
+      result.message = "Internal prefetch error: missing frame future for index " + std::to_string(i);
       return result;
     }
-    const auto load_end = std::chrono::steady_clock::now();
-    timings.load_ms = elapsedMs(load_start, load_end);
+    LoadedFrame loaded_frame = future_it->second.get();
+    prefetch_futures.erase(future_it);
+
+    schedule_prefetch(i + prefetch_window);
+
+    if (!loaded_frame.ok) {
+      result.message = "Frame load failed: " + loaded_frame.error;
+      return result;
+    }
+
+    FrameData frame = std::move(loaded_frame.frame);
+    timings.load_ms = loaded_frame.load_ms;
 
     const auto pre_start = std::chrono::steady_clock::now();
+    if (frame.gray.empty()) {
+      if (!image_processor.convertBgrToGray(frame.rgb, frame.gray)) {
+        result.message = "Gray conversion failed for frame " + frame.meta.frame_id;
+        return result;
+      }
+    }
     if (!depth_processor.convertToMeters(frame.depth_u16, frame.depth_m)) {
       result.message = "Depth conversion failed for frame " + frame.meta.frame_id;
       return result;
@@ -338,11 +403,13 @@ PipelineResult runPipeline(const PipelineOptions& options) {
 
 #ifdef CUVSLAM_WITH_RERUN
     if (options.enable_rerun && !rerun_logger) {
+      const int frame_width = !frame.rgb.empty() ? frame.rgb.cols : frame.gray.cols;
+      const int frame_height = !frame.rgb.empty() ? frame.rgb.rows : frame.gray.rows;
       rerun_logger = std::make_unique<RerunLogger>(
           options,
           intrinsics,
-          frame.rgb.cols,
-          frame.rgb.rows,
+          frame_width,
+          frame_height,
           depth_scale_m_per_unit,
           &rerun_warning);
     }
@@ -418,4 +485,3 @@ PipelineResult runPipeline(const PipelineOptions& options) {
 }
 
 }  // namespace cuvslam
-

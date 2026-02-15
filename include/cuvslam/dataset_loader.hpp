@@ -19,7 +19,10 @@ class DatasetLoader {
   DatasetFormat datasetFormat() const { return dataset_format_; }
   float recommendedDepthScaleMPerUnit() const { return recommended_depth_scale_m_per_unit_; }
 
-  bool loadFrame(size_t index, FrameData& frame, std::string* error = nullptr) const;
+  bool loadFrame(size_t index,
+                 FrameData& frame,
+                 bool load_rgb_color = true,
+                 std::string* error = nullptr) const;
 
  private:
   bool detectDatasetFormat(std::string* error);

@@ -4,6 +4,8 @@
 
 #include <opencv2/core/utility.hpp>
 
+#include <chrono>
+
 namespace cuvslam {
 
 DepthProcessor::DepthProcessor(bool prefer_cuda)
@@ -21,6 +23,38 @@ bool DepthProcessor::convertToMeters(const cv::Mat& depth_u16, cv::Mat& depth_m)
   }
 
 #ifdef CUVSLAM_WITH_CUDA
+  if (use_cuda_ && !backend_decided_) {
+    cv::Mat depth_gpu;
+    const auto gpu_start = std::chrono::steady_clock::now();
+    const bool gpu_ok = cudaConvertDepthU16ToMeters(depth_u16,
+                                                    depth_gpu,
+                                                    depth_scale_m_per_unit_,
+                                                    min_depth_m_,
+                                                    max_depth_m_);
+    const auto gpu_end = std::chrono::steady_clock::now();
+    const double gpu_ms = std::chrono::duration<double, std::milli>(gpu_end - gpu_start).count();
+
+    cv::Mat depth_cpu;
+    const auto cpu_start = std::chrono::steady_clock::now();
+    const bool cpu_ok = convertToMetersCpu(depth_u16, depth_cpu);
+    const auto cpu_end = std::chrono::steady_clock::now();
+    const double cpu_ms = std::chrono::duration<double, std::milli>(cpu_end - cpu_start).count();
+
+    if (!cpu_ok) {
+      return false;
+    }
+
+    backend_decided_ = true;
+    if (gpu_ok && gpu_ms < cpu_ms) {
+      depth_m = std::move(depth_gpu);
+      use_cuda_ = true;
+    } else {
+      depth_m = std::move(depth_cpu);
+      use_cuda_ = false;
+    }
+    return true;
+  }
+
   if (use_cuda_) {
     if (cudaConvertDepthU16ToMeters(depth_u16,
                                     depth_m,
@@ -30,10 +64,12 @@ bool DepthProcessor::convertToMeters(const cv::Mat& depth_u16, cv::Mat& depth_m)
       return true;
     }
     // GPU path failed, transparently fallback.
+    backend_decided_ = true;
     use_cuda_ = false;
   }
 #endif
 
+  backend_decided_ = true;
   return convertToMetersCpu(depth_u16, depth_m);
 }
 
@@ -65,4 +101,3 @@ bool DepthProcessor::convertToMetersCpu(const cv::Mat& depth_u16, cv::Mat& depth
 }
 
 }  // namespace cuvslam
-

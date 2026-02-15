@@ -22,10 +22,10 @@ class DepthProcessor {
   bool convertToMetersCpu(const cv::Mat& depth_u16, cv::Mat& depth_m) const;
 
   bool use_cuda_ = false;
+  bool backend_decided_ = false;
   float depth_scale_m_per_unit_ = 0.001f;
   float min_depth_m_ = 0.1f;
   float max_depth_m_ = 8.0f;
 };
 
 }  // namespace cuvslam
-

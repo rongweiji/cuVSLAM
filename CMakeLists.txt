@@ -39,6 +39,7 @@ endif()
 
 add_library(cuvslam STATIC
   src/dataset_loader.cpp
+  src/image_processing.cpp
   src/depth_processing.cpp
   src/pose_estimator.cpp
   src/evaluation.cpp
@@ -58,6 +59,7 @@ target_compile_options(cuvslam PRIVATE
 
 if(CUVSLAM_WITH_CUDA)
   target_sources(cuvslam PRIVATE src/cuda/depth_kernels.cu)
+  target_sources(cuvslam PRIVATE src/cuda/image_kernels.cu)
   target_compile_definitions(cuvslam PUBLIC CUVSLAM_WITH_CUDA=1)
   target_link_libraries(cuvslam PUBLIC CUDA::cudart)
   set_target_properties(cuvslam PROPERTIES
