@@ -1,4 +1,40 @@
-data_sample/
+# Local notes / requirement drafts
 code_requirment.md
+
+# Large local datasets and tools
+data_sample/
+third_party_datasets/
+.tools/
+
+# Build directories
 build/
+build_*/
+cmake-build-*/
+
+# In-source CMake artifacts (if generated accidentally)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+Makefile
+compile_commands.json
+
+# Generated run outputs
 outputs/
+*.rrd
+*.log
+
+# Coverage / profiling leftovers
+*.gcda
+*.gcno
+*.profraw
+*.profdata
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
