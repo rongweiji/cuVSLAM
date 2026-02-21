@@ -80,23 +80,15 @@ struct FrameData {
   cv::Mat rgb;
   cv::Mat gray;
   cv::Mat depth_u16;
-  cv::Mat depth_m;
 };
 
 struct TrackingStats {
-  int keypoints_prev = 0;
-  int keypoints_curr = 0;
-  int tentative_matches = 0;
-  int inlier_matches = 0;
   bool pose_valid = false;
-  Pose relative_curr_from_prev = Pose::Identity();
 };
 
 struct StageTimings {
   double load_ms = 0.0;
   double preprocess_ms = 0.0;
-  double detect_describe_ms = 0.0;
-  double match_ms = 0.0;
   double pose_ms = 0.0;
   double total_ms = 0.0;
 };
@@ -119,7 +111,6 @@ struct RunSummary {
   size_t tracked_frames = 0;
   double total_time_ms = 0.0;
   double average_fps = 0.0;
-  double avg_inliers = 0.0;
 };
 
 inline bool isFinitePose(const Pose& pose) {

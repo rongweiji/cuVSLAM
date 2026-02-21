@@ -7,6 +7,11 @@ DATASET_ROOT="${1:-${ROOT_DIR}/third_party_datasets/tum_rgbd/rgbd_dataset_freibu
 OUTPUT_DIR="${2:-${ROOT_DIR}/outputs/tum_freiburg1_xyz}"
 MAX_FRAMES="${3:-0}"
 
+# On WSL, prefer NVIDIA's driver-provided CUDA loader path.
+if [[ -d "/usr/lib/wsl/lib" ]]; then
+  export LD_LIBRARY_PATH="/usr/lib/wsl/lib:${LD_LIBRARY_PATH:-}"
+fi
+
 if [[ ! -d "${DATASET_ROOT}" ]]; then
   echo "Dataset not found at ${DATASET_ROOT}; downloading default TUM sequence..."
   "${ROOT_DIR}/scripts/download_tum_rgbd.sh" rgbd_dataset_freiburg1_xyz "${ROOT_DIR}/third_party_datasets/tum_rgbd"

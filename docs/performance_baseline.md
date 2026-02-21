@@ -12,7 +12,7 @@ Environment:
 
 Dataset format: `custom_iphone`
 
-Reference: `data_sample/orbslam3_poses.tum`
+Reference: pass with `--reference_tum <path>` when available
 
 Run command:
 
@@ -78,4 +78,3 @@ Results (`outputs/tum_freiburg1_xyz_rerun/performance_report.md`):
 - The new estimator significantly reduced drift on `data_sample` compared to the previous baseline.
 - TUM results are substantially better because sequence calibration and depth scale are well-defined.
 - Enabling Rerun introduces additional logging overhead; this is expected.
-

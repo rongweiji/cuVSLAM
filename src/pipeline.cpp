@@ -1,12 +1,12 @@
 #include "cuvslam/pipeline.hpp"
 
 #include "cuvslam/dataset_loader.hpp"
-#include "cuvslam/depth_processing.hpp"
 #include "cuvslam/image_processing.hpp"
-#include "cuvslam/pose_estimator.hpp"
+#include "cuvslam/libcuvslam_backend.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -43,8 +43,7 @@ bool writeFrameMetricsCsv(const std::string& path,
     return false;
   }
 
-  out << "index,timestamp_s,tx,ty,tz,tracked,inliers,keypoints_prev,keypoints_curr,tentative_matches,"
-         "load_ms,preprocess_ms,detect_describe_ms,match_ms,pose_ms,total_ms\n";
+  out << "index,timestamp_s,tx,ty,tz,tracked,load_ms,preprocess_ms,pose_ms,total_ms\n";
 
   out << std::fixed << std::setprecision(6);
   for (const auto& frame : frames) {
@@ -54,14 +53,8 @@ bool writeFrameMetricsCsv(const std::string& path,
         << frame.world_from_cam.t.y() << ","
         << frame.world_from_cam.t.z() << ","
         << (frame.tracking.pose_valid ? 1 : 0) << ","
-        << frame.tracking.inlier_matches << ","
-        << frame.tracking.keypoints_prev << ","
-        << frame.tracking.keypoints_curr << ","
-        << frame.tracking.tentative_matches << ","
         << frame.timings.load_ms << ","
         << frame.timings.preprocess_ms << ","
-        << frame.timings.detect_describe_ms << ","
-        << frame.timings.match_ms << ","
         << frame.timings.pose_ms << ","
         << frame.timings.total_ms << "\n";
   }
@@ -83,16 +76,12 @@ bool writePerformanceReport(const std::string& path,
 
   double load_total = 0.0;
   double preprocess_total = 0.0;
-  double detect_total = 0.0;
-  double match_total = 0.0;
   double pose_total = 0.0;
   double frame_total = 0.0;
 
   for (const auto& frame : result.frames) {
     load_total += frame.timings.load_ms;
     preprocess_total += frame.timings.preprocess_ms;
-    detect_total += frame.timings.detect_describe_ms;
-    match_total += frame.timings.match_ms;
     pose_total += frame.timings.pose_ms;
     frame_total += frame.timings.total_ms;
   }
@@ -102,6 +91,10 @@ bool writePerformanceReport(const std::string& path,
   out << "# cuVSLAM Performance Report\n\n";
   out << "## Dataset\n\n";
   out << "- Dataset format: " << datasetFormatToString(result.dataset_format) << "\n";
+  out << "- Tracking backend: " << kTrackingBackendName << "\n";
+  if (!result.backend_details.empty()) {
+    out << "- Backend details: " << result.backend_details << "\n";
+  }
   out << "- Depth scale (m/unit): " << std::fixed << std::setprecision(6) << depth_scale_m_per_unit << "\n";
   out << "- Intrinsics (fx, fy, cx, cy): " << std::fixed << std::setprecision(3)
       << result.intrinsics.fx << ", " << result.intrinsics.fy << ", "
@@ -112,7 +105,6 @@ bool writePerformanceReport(const std::string& path,
   out << "- Successfully tracked frames: " << result.summary.tracked_frames << "\n";
   out << "- Total runtime (ms): " << std::fixed << std::setprecision(3) << result.summary.total_time_ms << "\n";
   out << "- Average FPS: " << std::fixed << std::setprecision(3) << result.summary.average_fps << "\n";
-  out << "- Average inlier matches: " << std::fixed << std::setprecision(3) << result.summary.avg_inliers << "\n";
   out << "- ATE RMSE (m): " << std::fixed << std::setprecision(4) << result.evaluation.ate_rmse_m << "\n";
   out << "- RPE RMSE (m): " << std::fixed << std::setprecision(4) << result.evaluation.rpe_rmse_m << "\n\n";
 
@@ -120,9 +112,7 @@ bool writePerformanceReport(const std::string& path,
   out << "| Stage | Mean ms |\n";
   out << "|---|---:|\n";
   out << "| Load images | " << std::fixed << std::setprecision(3) << (load_total / n) << " |\n";
-  out << "| Depth preprocessing | " << std::fixed << std::setprecision(3) << (preprocess_total / n) << " |\n";
-  out << "| Feature detect+describe | " << std::fixed << std::setprecision(3) << (detect_total / n) << " |\n";
-  out << "| Feature match | " << std::fixed << std::setprecision(3) << (match_total / n) << " |\n";
+  out << "| Image preprocessing | " << std::fixed << std::setprecision(3) << (preprocess_total / n) << " |\n";
   out << "| Relative pose estimate | " << std::fixed << std::setprecision(3) << (pose_total / n) << " |\n";
   out << "| Full frame | " << std::fixed << std::setprecision(3) << (frame_total / n) << " |\n\n";
 
@@ -207,16 +197,20 @@ class RerunLogger {
 
     const size_t stride = std::max<size_t>(1, options_.rerun_log_every_n_frames);
     if (options_.rerun_log_images && (static_cast<size_t>(frame_result.index) % stride == 0U)) {
+      const uint32_t rgb_width = static_cast<uint32_t>(frame.rgb.cols);
+      const uint32_t rgb_height = static_cast<uint32_t>(frame.rgb.rows);
       rec_.log(
           "world/camera/rgb",
           rerun::Image(frame.rgb.ptr<uint8_t>(),
-                       {frame.rgb.cols, frame.rgb.rows},
+                       {rgb_width, rgb_height},
                        rerun::datatypes::ColorModel::BGR));
 
+      const uint32_t depth_width = static_cast<uint32_t>(frame.depth_u16.cols);
+      const uint32_t depth_height = static_cast<uint32_t>(frame.depth_u16.rows);
       rec_.log(
           "world/camera/depth",
           rerun::DepthImage(frame.depth_u16.ptr<uint16_t>(),
-                            {frame.depth_u16.cols, frame.depth_u16.rows})
+                            {depth_width, depth_height})
               .with_meter(depth_scale_m_per_unit_));
     }
   }
@@ -266,23 +260,20 @@ PipelineResult runPipeline(const PipelineOptions& options) {
     return result;
   }
 
-  PoseEstimatorParams pose_params;
-  pose_params.min_depth_m = options.min_depth_m;
-  pose_params.max_depth_m = options.max_depth_m;
-
-  DepthPoseEstimator estimator(pose_params);
   ImageProcessor image_processor(options.use_cuda);
-  DepthProcessor depth_processor(options.use_cuda);
-  depth_processor.setDepthScale(depth_scale_m_per_unit);
-  depth_processor.setDepthLimits(options.min_depth_m, options.max_depth_m);
+  LibCuVSLAMBackend libcuvslam_backend;
+  LibCuVSLAMOptions libcuvslam_options;
+  libcuvslam_options.library_path = options.libcuvslam_library_path;
+  libcuvslam_options.use_gpu = true;
+  libcuvslam_options.depth_scale_m_per_unit = depth_scale_m_per_unit;
+  libcuvslam_options.verbosity = options.libcuvslam_verbosity;
+  bool backend_initialized = false;
 
   result.frames.reserve(frame_limit);
   result.trajectory.reserve(frame_limit);
 
   Pose world_from_cam = Pose::Identity();
-  FrameData prev_frame;
 
-  double inlier_sum = 0.0;
   size_t tracked_count = 0;
 
 #ifdef CUVSLAM_WITH_RERUN
@@ -291,6 +282,9 @@ PipelineResult runPipeline(const PipelineOptions& options) {
   std::string rerun_warning;
 
   const auto run_start = std::chrono::steady_clock::now();
+  bool realtime_clock_initialized = false;
+  double realtime_dataset_t0_s = 0.0;
+  std::chrono::steady_clock::time_point realtime_wall_t0;
 #ifdef CUVSLAM_WITH_RERUN
   const bool need_rgb_color = options.enable_rerun && options.rerun_log_images;
 #else
@@ -359,16 +353,50 @@ PipelineResult runPipeline(const PipelineOptions& options) {
     FrameData frame = std::move(loaded_frame.frame);
     timings.load_ms = loaded_frame.load_ms;
 
+    if (options.realtime_playback) {
+      if (!realtime_clock_initialized) {
+        realtime_clock_initialized = true;
+        realtime_dataset_t0_s = frame.meta.timestamp_s;
+        realtime_wall_t0 = std::chrono::steady_clock::now();
+      } else {
+        const double dataset_elapsed_s =
+            std::max(0.0, frame.meta.timestamp_s - realtime_dataset_t0_s);
+        const double target_elapsed_s = dataset_elapsed_s / options.realtime_playback_speed;
+        const auto now = std::chrono::steady_clock::now();
+        const double wall_elapsed_s =
+            std::chrono::duration<double>(now - realtime_wall_t0).count();
+        const double sleep_s = target_elapsed_s - wall_elapsed_s;
+        if (sleep_s > 0.0) {
+          std::this_thread::sleep_for(std::chrono::duration<double>(sleep_s));
+        }
+      }
+    }
+
+    if (!backend_initialized) {
+      const int frame_width = !frame.gray.empty() ? frame.gray.cols : frame.rgb.cols;
+      const int frame_height = !frame.gray.empty() ? frame.gray.rows : frame.rgb.rows;
+
+      std::string init_error;
+      if (libcuvslam_backend.initialize(intrinsics,
+                                        frame_width,
+                                        frame_height,
+                                        libcuvslam_options,
+                                        &init_error)) {
+        backend_initialized = true;
+        result.backend_details = "libcuvslam " + libcuvslam_backend.versionString() +
+                                 " @ " + libcuvslam_backend.loadedLibraryPath();
+      } else {
+        result.message = init_error;
+        return result;
+      }
+    }
+
     const auto pre_start = std::chrono::steady_clock::now();
     if (frame.gray.empty()) {
       if (!image_processor.convertBgrToGray(frame.rgb, frame.gray)) {
         result.message = "Gray conversion failed for frame " + frame.meta.frame_id;
         return result;
       }
-    }
-    if (!depth_processor.convertToMeters(frame.depth_u16, frame.depth_m)) {
-      result.message = "Depth conversion failed for frame " + frame.meta.frame_id;
-      return result;
     }
     const auto pre_end = std::chrono::steady_clock::now();
     timings.preprocess_ms = elapsedMs(pre_start, pre_end);
@@ -377,21 +405,20 @@ PipelineResult runPipeline(const PipelineOptions& options) {
     frame_result.index = frame.meta.index;
     frame_result.timestamp_s = frame.meta.timestamp_s;
 
-    if (i == 0) {
-      frame_result.world_from_cam = world_from_cam;
-      frame_result.tracking.pose_valid = true;
-    } else {
-      TrackingStats stats = estimator.estimate(prev_frame, frame, intrinsics, &timings);
-      frame_result.tracking = stats;
+    TrackingStats stats;
+    std::string track_error;
+    double track_ms = 0.0;
+    if (!libcuvslam_backend.track(frame, world_from_cam, &stats, &track_ms, &track_error)) {
+      result.message = "libcuvslam track failed for frame " + frame.meta.frame_id + ": " + track_error;
+      return result;
+    }
 
-      if (stats.pose_valid) {
-        const Pose prev_from_curr = stats.relative_curr_from_prev.inverse();
-        world_from_cam = world_from_cam * prev_from_curr;
-        ++tracked_count;
-        inlier_sum += static_cast<double>(stats.inlier_matches);
-      }
+    timings.pose_ms += track_ms;
+    frame_result.tracking = stats;
+    frame_result.world_from_cam = world_from_cam;
 
-      frame_result.world_from_cam = world_from_cam;
+    if (i > 0 && stats.pose_valid) {
+      ++tracked_count;
     }
 
     const auto frame_end = std::chrono::steady_clock::now();
@@ -421,8 +448,6 @@ PipelineResult runPipeline(const PipelineOptions& options) {
       rerun_warning = "Rerun visualization requested but binary was built without CUVSLAM_ENABLE_RERUN=ON.";
     }
 #endif
-
-    prev_frame = std::move(frame);
   }
 
   const auto run_end = std::chrono::steady_clock::now();
@@ -432,7 +457,6 @@ PipelineResult runPipeline(const PipelineOptions& options) {
   result.summary.average_fps = result.summary.total_time_ms > 0.0
                                    ? static_cast<double>(result.summary.total_frames) * 1000.0 / result.summary.total_time_ms
                                    : 0.0;
-  result.summary.avg_inliers = tracked_count > 0 ? inlier_sum / static_cast<double>(tracked_count) : 0.0;
 
   const fs::path out_dir = options.output_dir.empty() ? fs::path("outputs") : fs::path(options.output_dir);
   fs::create_directories(out_dir);
@@ -453,12 +477,8 @@ PipelineResult runPipeline(const PipelineOptions& options) {
 
   std::string reference_path = options.reference_tum_path;
   if (reference_path.empty()) {
-    const fs::path custom_ref = fs::path(options.dataset_root) / "orbslam3_poses.tum";
     const fs::path tum_ref = fs::path(options.dataset_root) / "groundtruth.txt";
-
-    if (fs::exists(custom_ref)) {
-      reference_path = custom_ref.string();
-    } else if (fs::exists(tum_ref)) {
+    if (fs::exists(tum_ref)) {
       reference_path = tum_ref.string();
     }
   }
@@ -469,6 +489,10 @@ PipelineResult runPipeline(const PipelineOptions& options) {
     if (!reference.empty()) {
       result.evaluation = evaluateTrajectory(result.trajectory, reference, options.evaluation_timestamp_tolerance_s);
     }
+  }
+
+  if (result.backend_details.empty()) {
+    result.backend_details = "libcuvslam";
   }
 
   if (!writePerformanceReport(result.report_path, result, depth_scale_m_per_unit, &error)) {

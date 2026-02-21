@@ -6,6 +6,11 @@ BUILD_DIR="${ROOT_DIR}/build"
 DATASET_ROOT="${1:-${ROOT_DIR}/data_sample}"
 OUTPUT_DIR="${2:-${ROOT_DIR}/outputs/full_run}"
 
+# On WSL, prefer NVIDIA's driver-provided CUDA loader path.
+if [[ -d "/usr/lib/wsl/lib" ]]; then
+  export LD_LIBRARY_PATH="/usr/lib/wsl/lib:${LD_LIBRARY_PATH:-}"
+fi
+
 cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release
 cmake --build "${BUILD_DIR}" -j"$(nproc)"
 

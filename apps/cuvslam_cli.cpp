@@ -12,20 +12,22 @@ void printUsage() {
             << "Options:\n"
             << "  --dataset_root <path>         Dataset root path\n"
             << "  --dataset_format <fmt>        auto|custom|tum (default: auto)\n"
+            << "  --libcuvslam_path <path>      Optional explicit path to libcuvslam.so\n"
+            << "  --libcuvslam_verbosity <N>    libcuvslam verbosity (default: 0)\n"
             << "  --output_dir <path>           Output directory for trajectory and reports\n"
             << "  --reference_tum <path>        Optional reference trajectory in TUM format\n"
             << "  --max_frames <N>              Process only first N frames (default: all)\n"
             << "  --depth_scale <value>         Depth meters per raw unit (default: auto per dataset)\n"
-            << "  --min_depth <value>           Minimum valid depth in meters (default: 0.15)\n"
-            << "  --max_depth <value>           Maximum valid depth in meters (default: 8.0)\n"
             << "  --eval_tolerance_s <value>    Timestamp tolerance for eval matching (default: 0.02)\n"
             << "  --fx --fy --cx --cy <value>   Override camera intrinsics\n"
-            << "  --no_cuda                     Disable CUDA depth preprocessing\n"
+            << "  --no_cuda                     Disable CUDA grayscale preprocessing\n"
             << "  --enable_rerun                Enable Rerun logging support\n"
             << "  --rerun_spawn                 Spawn Rerun viewer (requires rerun executable in PATH)\n"
             << "  --rerun_save <file.rrd>       Save Rerun stream to an .rrd file\n"
             << "  --rerun_no_images             Disable image/depth logging to Rerun\n"
             << "  --rerun_log_every_n <N>       Log images every N frames (default: 3)\n"
+            << "  --realtime                    Pace processing to dataset timestamps (real-time playback)\n"
+            << "  --realtime_speed <value>      Real-time playback speed multiplier (default: 1.0)\n"
             << "  --help                        Show this help\n";
 }
 
@@ -93,6 +95,11 @@ int main(int argc, char** argv) {
       continue;
     }
 
+    if (arg == "--realtime") {
+      options.realtime_playback = true;
+      continue;
+    }
+
     std::string value;
     if (arg == "--dataset_root") {
       if (!readValue(argc, argv, i, value)) {
@@ -100,6 +107,18 @@ int main(int argc, char** argv) {
         return 1;
       }
       options.dataset_root = value;
+    } else if (arg == "--libcuvslam_path") {
+      if (!readValue(argc, argv, i, value)) {
+        std::cerr << "Missing value for --libcuvslam_path\n";
+        return 1;
+      }
+      options.libcuvslam_library_path = value;
+    } else if (arg == "--libcuvslam_verbosity") {
+      if (!readValue(argc, argv, i, value)) {
+        std::cerr << "Missing value for --libcuvslam_verbosity\n";
+        return 1;
+      }
+      options.libcuvslam_verbosity = std::stoi(value);
     } else if (arg == "--dataset_format") {
       if (!readValue(argc, argv, i, value)) {
         std::cerr << "Missing value for --dataset_format\n";
@@ -133,18 +152,6 @@ int main(int argc, char** argv) {
         return 1;
       }
       options.depth_scale_m_per_unit = std::stof(value);
-    } else if (arg == "--min_depth") {
-      if (!readValue(argc, argv, i, value)) {
-        std::cerr << "Missing value for --min_depth\n";
-        return 1;
-      }
-      options.min_depth_m = std::stof(value);
-    } else if (arg == "--max_depth") {
-      if (!readValue(argc, argv, i, value)) {
-        std::cerr << "Missing value for --max_depth\n";
-        return 1;
-      }
-      options.max_depth_m = std::stof(value);
     } else if (arg == "--eval_tolerance_s") {
       if (!readValue(argc, argv, i, value)) {
         std::cerr << "Missing value for --eval_tolerance_s\n";
@@ -193,6 +200,13 @@ int main(int argc, char** argv) {
       }
       options.enable_rerun = true;
       options.rerun_log_every_n_frames = static_cast<size_t>(std::stoull(value));
+    } else if (arg == "--realtime_speed") {
+      if (!readValue(argc, argv, i, value)) {
+        std::cerr << "Missing value for --realtime_speed\n";
+        return 1;
+      }
+      options.realtime_playback = true;
+      options.realtime_playback_speed = std::stod(value);
     } else {
       std::cerr << "Unknown option: " << arg << "\n";
       printUsage();
@@ -209,12 +223,14 @@ int main(int argc, char** argv) {
     options.override_intrinsics = true;
   }
 
+  if (options.realtime_playback_speed <= 0.0) {
+    std::cerr << "--realtime_speed must be > 0\n";
+    return 1;
+  }
+
   if (options.reference_tum_path.empty()) {
-    const std::filesystem::path custom_ref = std::filesystem::path(options.dataset_root) / "orbslam3_poses.tum";
     const std::filesystem::path tum_ref = std::filesystem::path(options.dataset_root) / "groundtruth.txt";
-    if (std::filesystem::exists(custom_ref)) {
-      options.reference_tum_path = custom_ref.string();
-    } else if (std::filesystem::exists(tum_ref)) {
+    if (std::filesystem::exists(tum_ref)) {
       options.reference_tum_path = tum_ref.string();
     }
   }
@@ -227,6 +243,10 @@ int main(int argc, char** argv) {
 
   std::cout << "Pipeline completed.\n";
   std::cout << "Dataset format: " << cuvslam::datasetFormatToString(result.dataset_format) << "\n";
+  std::cout << "Backend used: " << cuvslam::kTrackingBackendName << "\n";
+  if (!result.backend_details.empty()) {
+    std::cout << "Backend details: " << result.backend_details << "\n";
+  }
   std::cout << "Frames: " << result.summary.total_frames << "\n";
   std::cout << "Tracked frames: " << result.summary.tracked_frames << "\n";
   std::cout << "Average FPS: " << result.summary.average_fps << "\n";
@@ -241,4 +261,3 @@ int main(int argc, char** argv) {
 
   return 0;
 }
-

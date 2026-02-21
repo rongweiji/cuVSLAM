@@ -4,6 +4,8 @@ code_requirment.md
 # Large local datasets and tools
 data_sample/
 third_party_datasets/
+third_party/cuvslam_sdk/
+third_party/isaac_ros_nitros_src/
 .tools/
 
 # Build directories
